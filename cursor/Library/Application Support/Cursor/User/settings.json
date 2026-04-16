@@ -63,6 +63,14 @@
         {
           "before": ["<leader>", "t"],
           "commands": ["workbench.action.terminal.focus"]
+        },
+        {
+          "before": ["j"],
+          "after": ["g", "j"]
+        },
+        {
+            "before": ["k"],
+            "after": ["g", "k"]
         }
     ],
 

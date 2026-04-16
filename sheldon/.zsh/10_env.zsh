@@ -1,3 +1,5 @@
+bindkey -e
+
 export EDITOR=vim
 
 # set history
