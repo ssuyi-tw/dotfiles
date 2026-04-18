@@ -114,6 +114,7 @@ source "$ITEM_DIR/spotify_new.sh"
 # Right
 source "$ITEM_DIR/calendar.sh"
 source "$ITEM_DIR/brew.sh"
+source "$ITEM_DIR/claude.sh"
 source "$ITEM_DIR/github.sh"
 source "$ITEM_DIR/wifi.sh"
 source "$ITEM_DIR/battery.sh"
@@ -123,7 +124,7 @@ source "$ITEM_DIR/cpu.sh"
 source "$ITEM_DIR/load.sh"
 # source "$ITEM_DIR/svim.sh"
 
-sketchybar --add bracket right calendar status memory cpu load \
+sketchybar --add bracket right calendar status claude.usage memory cpu load \
            --set         right background.color=$BAR_COLOR \
                                background.height=28 \
                                background.corner_radius=9
