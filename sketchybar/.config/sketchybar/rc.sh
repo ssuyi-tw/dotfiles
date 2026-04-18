@@ -107,8 +107,7 @@ sketchybar --add bracket left apple.logo '/space\..*/' space_creator front_app \
                               background.corner_radius=9
 
 # Center
-# source "$ITEM_DIR/spotify.sh"
-source "$ITEM_DIR/spotify_new.sh"
+source "$ITEM_DIR/spotify.sh"
 # source "$ITEM_DIR/media.sh"
 
 # Right
