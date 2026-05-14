@@ -3,16 +3,10 @@
 source "$CONFIG_DIR/colors.sh"
 source "$CONFIG_DIR/icons.sh"
 
-# Claude Code 5-hour session token limit, measured in NON-CACHE tokens
-# (input + output only). Anthropic doesn't officially publish these, but
-# community-observed per-plan ceilings are approximately:
-#   Pro       ~20_000
-#   Max 5x    ~100_000
-#   Max 20x   ~400_000   <- calibrated to observed usage on this account
-# Cache-read tokens are excluded because they dominate raw totals (~99%)
-# while Anthropic's rate limiter weighs them far less.
-# Override per session via env: CLAUDE_SESSION_TOKEN_LIMIT=…
-CLAUDE_SESSION_TOKEN_LIMIT="${CLAUDE_SESSION_TOKEN_LIMIT:-400000}"
+# Cache the authoritative /oauth/usage response to stay under Anthropic's
+# endpoint rate limit (Claude Code itself gets 429 at sub-second polls).
+USAGE_CACHE="${TMPDIR:-/tmp}/claude_usage_oauth.json"
+USAGE_CACHE_TTL=55
 
 CCUSAGE=$(command -v ccusage || echo "$HOME/.nvm/versions/node/v22.21.1/bin/ccusage")
 
@@ -50,86 +44,123 @@ pct_color() {
   }'
 }
 
+# mins from an ISO-8601 timestamp to now (positive if in the future).
+mins_until() {
+  local iso="$1"
+  [ -z "$iso" ] || [ "$iso" = "null" ] && { echo 0; return; }
+  python3 -c "
+import sys, datetime
+s = sys.argv[1].replace('Z','+00:00')
+t = datetime.datetime.fromisoformat(s)
+now = datetime.datetime.now(datetime.timezone.utc)
+print(max(0, int((t - now).total_seconds() // 60)))
+" "$iso" 2>/dev/null || echo 0
+}
+
+fetch_usage() {
+  if [ -f "$USAGE_CACHE" ]; then
+    local age
+    age=$(( $(date +%s) - $(stat -f %m "$USAGE_CACHE" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt "$USAGE_CACHE_TTL" ]; then
+      cat "$USAGE_CACHE"
+      return 0
+    fi
+  fi
+
+  local tok
+  tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+        | jq -r '.claudeAiOauth.accessToken // empty')
+  [ -z "$tok" ] && return 1
+
+  local body status
+  body=$(curl -sS -m 5 -w "\n%{http_code}" \
+    -H "Authorization: Bearer $tok" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+  status=$(echo "$body" | tail -n1)
+  body=$(echo "$body" | sed '$d')
+
+  if [ "$status" = "200" ]; then
+    printf '%s' "$body" >"$USAGE_CACHE"
+    printf '%s' "$body"
+    return 0
+  fi
+  # On 429/401/etc. fall back to stale cache if we have one.
+  [ -f "$USAGE_CACHE" ] && cat "$USAGE_CACHE" && return 0
+  return 1
+}
+
 update() {
-  if [ -z "$CCUSAGE" ] || ! command -v "$CCUSAGE" >/dev/null 2>&1; then
-    sketchybar --set claude.usage icon=✻ icon.color=$RED label="ccusage?"
+  local usage
+  if ! usage=$(fetch_usage) || [ -z "$usage" ]; then
+    sketchybar --set claude.usage icon=✻ icon.color=$RED label="auth?"
     return
   fi
 
-  local blocks
-  blocks=$("$CCUSAGE" blocks --active --json -O 2>/dev/null)
+  local sess_pct sess_reset sess_remaining
+  sess_pct=$(echo "$usage" | jq -r '.five_hour.utilization // 0')
+  sess_reset=$(echo "$usage" | jq -r '.five_hour.resets_at // ""')
+  sess_remaining=$(mins_until "$sess_reset")
 
-  if [ -z "$blocks" ] || [ "$(echo "$blocks" | jq '.blocks | length')" = "0" ]; then
-    sketchybar --set claude.usage icon.color=$GREY label="idle"
-    render_popup_idle
-    return
-  fi
-
-  local block cost total_tokens in_tok out_tok cache_tok non_cache used_pct remaining burn_tpm projected_cost color
-  block=$(echo "$blocks"      | jq '.blocks[0]')
-  cost=$(echo "$block"        | jq -r '.costUSD // 0')
-  total_tokens=$(echo "$block" | jq -r '.totalTokens // 0')
-  in_tok=$(echo "$block"      | jq -r '.tokenCounts.inputTokens // 0')
-  out_tok=$(echo "$block"     | jq -r '.tokenCounts.outputTokens // 0')
-  cache_tok=$(echo "$block"   | jq -r '(.tokenCounts.cacheCreationInputTokens // 0) + (.tokenCounts.cacheReadInputTokens // 0)')
-  remaining=$(echo "$block"   | jq -r '.projection.remainingMinutes // 0')
-  burn_tpm=$(echo "$block"    | jq -r '.burnRate.tokensPerMinute // 0')
-  projected_cost=$(echo "$block" | jq -r '.projection.totalCost // 0')
-
-  non_cache=$((in_tok + out_tok))
-  used_pct=$(awk -v t="$non_cache" -v l="$CLAUDE_SESSION_TOKEN_LIMIT" 'BEGIN { if (l > 0) printf "%.1f", (t/l)*100; else print "0" }')
-  color=$(pct_color "$used_pct")
-
-  local display_pct label
-  display_pct=$(awk -v p="$used_pct" 'BEGIN { if (p > 100) printf "100+"; else printf "%.0f", p }')
+  local color display_pct label
+  color=$(pct_color "$sess_pct")
+  display_pct=$(awk -v p="$sess_pct" 'BEGIN { if (p >= 100) printf "100+"; else printf "%.0f", p }')
   if [ "$display_pct" = "100+" ]; then
-    label=$(printf "100+%% · %s" "$(fmt_mins "$remaining")")
+    label=$(printf "100+%% · %s" "$(fmt_mins "$sess_remaining")")
   else
-    label=$(printf "%s%% · %s" "$display_pct" "$(fmt_mins "$remaining")")
+    label=$(printf "%s%% · %s" "$display_pct" "$(fmt_mins "$sess_remaining")")
   fi
 
   sketchybar --set claude.usage icon.color="$color" label="$label" label.color="$color"
 
-  render_popup "$cost" "$total_tokens" "$non_cache" "$cache_tok" "$used_pct" "$remaining" "$burn_tpm" "$projected_cost"
-}
-
-render_popup_idle() {
-  local today today_cost today_tokens
-  today=$("$CCUSAGE" daily --json -o desc -O 2>/dev/null | jq '.daily[0] // empty')
-  today_cost=$(echo "$today" | jq -r '.totalCost // 0')
-  today_tokens=$(echo "$today" | jq -r '.totalTokens // 0')
-
-  build_popup_rows \
-    "Session"       "no active block" "$GREY" \
-    "Today cost"    "$(fmt_money "$today_cost")" "$WHITE" \
-    "Today tokens"  "$(fmt_tokens "$today_tokens")" "$WHITE"
+  render_popup "$usage" "$sess_pct" "$sess_remaining"
 }
 
 render_popup() {
-  local cost=$1 total=$2 non_cache=$3 cache=$4 used_pct=$5 remaining=$6 burn=$7 pcost=$8
+  local usage=$1 sess_pct=$2 sess_remaining=$3
+
+  local week_pct week_sonnet week_opus sess_color week_color
+  week_pct=$(echo "$usage"    | jq -r '.seven_day.utilization // 0')
+  week_sonnet=$(echo "$usage" | jq -r '.seven_day_sonnet.utilization // empty')
+  week_opus=$(echo "$usage"   | jq -r '.seven_day_opus.utilization // empty')
+  sess_color=$(pct_color "$sess_pct")
+  week_color=$(pct_color "$week_pct")
+
+  local block cost billable burn_tpm projected_cost
+  block=$("$CCUSAGE" blocks --active --json -O 2>/dev/null | jq '.blocks[0] // empty')
+  if [ -n "$block" ]; then
+    cost=$(echo "$block"       | jq -r '.costUSD // 0')
+    billable=$(echo "$block"   | jq -r '(.tokenCounts.inputTokens // 0) + (.tokenCounts.outputTokens // 0) + (.tokenCounts.cacheCreationInputTokens // 0)')
+    burn_tpm=$(echo "$block"   | jq -r '.burnRate.tokensPerMinute // 0')
+    projected_cost=$(echo "$block" | jq -r '.projection.totalCost // 0')
+  else
+    cost=0; billable=0; burn_tpm=0; projected_cost=0
+  fi
 
   local today today_cost today_tokens yest_cost yest_tokens week_cost
   today=$("$CCUSAGE" daily --json -o desc -O 2>/dev/null)
-  today_cost=$(echo "$today"  | jq -r '.daily[0].totalCost // 0')
+  today_cost=$(echo "$today"   | jq -r '.daily[0].totalCost // 0')
   today_tokens=$(echo "$today" | jq -r '.daily[0].totalTokens // 0')
-  yest_cost=$(echo "$today"   | jq -r '.daily[1].totalCost // 0')
-  yest_tokens=$(echo "$today" | jq -r '.daily[1].totalTokens // 0')
-  week_cost=$(echo "$today"   | jq -r '[.daily[0:7][].totalCost] | add // 0')
+  yest_cost=$(echo "$today"    | jq -r '.daily[1].totalCost // 0')
+  yest_tokens=$(echo "$today"  | jq -r '.daily[1].totalTokens // 0')
+  week_cost=$(echo "$today"    | jq -r '[.daily[0:7][].totalCost] | add // 0')
 
-  local used_color
-  used_color=$(pct_color "$used_pct")
-
-  build_popup_rows \
-    "Session cost"     "$(fmt_money "$cost")"                                         "$WHITE"      \
-    "Non-cache used"   "$(fmt_tokens "$non_cache") / $(fmt_tokens "$CLAUDE_SESSION_TOKEN_LIMIT")"  "$used_color" \
-    "Session %"        "$(printf "%.1f%%" "$used_pct")"                               "$used_color" \
-    "Cache tokens"     "$(fmt_tokens "$cache")"                                       "$GREY"       \
-    "Time left"        "$(fmt_mins "$remaining")"                                     "$WHITE"      \
-    "Burn rate"        "$(fmt_tokens "$burn")/min"                                    "$WHITE"      \
-    "Projected cost"   "$(fmt_money "$pcost")"                                        "$YELLOW"     \
-    "Today"            "$(fmt_money "$today_cost") · $(fmt_tokens "$today_tokens")"   "$WHITE"      \
-    "Yesterday"        "$(fmt_money "$yest_cost") · $(fmt_tokens "$yest_tokens")"     "$GREY"       \
-    "Last 7 days"      "$(fmt_money "$week_cost")"                                    "$BLUE"
+  local rows=(
+    "5-hour session"   "$(printf "%.0f%% · %s" "$sess_pct" "$(fmt_mins "$sess_remaining")")" "$sess_color"
+    "Weekly all"       "$(printf "%.0f%%" "$week_pct")"                                      "$week_color"
+  )
+  [ -n "$week_opus" ]   && rows+=("Weekly Opus"   "$(printf "%.0f%%" "$week_opus")"   "$(pct_color "$week_opus")")
+  [ -n "$week_sonnet" ] && rows+=("Weekly Sonnet" "$(printf "%.0f%%" "$week_sonnet")" "$(pct_color "$week_sonnet")")
+  rows+=(
+    "Session cost"     "$(fmt_money "$cost")"                                           "$WHITE"
+    "Session tokens"   "$(fmt_tokens "$billable")"                                      "$GREY"
+    "Burn rate"        "$(fmt_tokens "$burn_tpm")/min"                                  "$WHITE"
+    "Projected cost"   "$(fmt_money "$projected_cost")"                                 "$YELLOW"
+    "Today"            "$(fmt_money "$today_cost") · $(fmt_tokens "$today_tokens")"     "$WHITE"
+    "Yesterday"        "$(fmt_money "$yest_cost") · $(fmt_tokens "$yest_tokens")"       "$GREY"
+    "Last 7 days"      "$(fmt_money "$week_cost")"                                      "$BLUE"
+  )
+  build_popup_rows "${rows[@]}"
 }
 
 build_popup_rows() {

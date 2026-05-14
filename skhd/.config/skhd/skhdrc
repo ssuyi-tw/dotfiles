@@ -1,6 +1,7 @@
 # open terminal
 # alt - return : /Applications/Kitty.app/Contents/MacOS/kitty --single-instance -d ~ &> /dev/null
-alt - return : /Applications/Wezterm.app/COntents/MacOS/wezterm &> /dev/null
+# alt - return : /Applications/Wezterm.app/Contents/MacOS/wezterm &> /dev/null
+alt - return : open -na /Applications/Ghostty.app
 
 # reload yabai
 shift + alt - r : launchctl kickstart -k "gui/${UID}/com.koekeishiya.yabai"
