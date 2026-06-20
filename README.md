@@ -2,6 +2,8 @@
 
 Some configuration I am using.
 
+See [CHEATSHEET.md](CHEATSHEET.md) for my desktop and editor keyboard shortcuts.
+
 TL;DR; basic zsh setup
 
 ```sh
