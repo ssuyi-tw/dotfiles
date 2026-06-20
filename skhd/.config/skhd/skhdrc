@@ -1,10 +1,10 @@
 # open terminal
 # alt - return : /Applications/Kitty.app/Contents/MacOS/kitty --single-instance -d ~ &> /dev/null
 # alt - return : /Applications/Wezterm.app/Contents/MacOS/wezterm &> /dev/null
-alt - return : open -na /Applications/Ghostty.app
+alt - return : open -a /Applications/Ghostty.app
 
 # reload yabai
-shift + alt - r : launchctl kickstart -k "gui/${UID}/com.koekeishiya.yabai"
+shift + alt - r : launchctl kickstart -k "gui/${UID}/com.asmvik.yabai"
 
 # focus window
 alt - h : yabai -m window --focus west
