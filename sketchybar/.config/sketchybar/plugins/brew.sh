@@ -2,12 +2,15 @@
 
 source "$CONFIG_DIR/colors.sh"
 
-# Sketchybar inherits SIGCHLD=SIG_IGN, so children of this script can't reap
-# their own children — `$?` is unrecoverable in Ruby (POSIX: waitpid returns
-# ECHILD when SIGCHLD is ignored). Brew 5.1.6's Hardware::CPU.cores crashes
-# on the resulting nil $CHILD_STATUS. Setting HOMEBREW_DOWNLOAD_CONCURRENCY
-# to a literal value bypasses the call into Hardware::CPU.cores entirely.
+# Sketchybar execs plugins with SIGCHLD=SIG_IGN, which Ruby inherits — waitpid
+# then returns ECHILD, so brew's `Process::Status#exitstatus` is nil and brew
+# crashes (`undefined method 'exitstatus' for nil`). In brew 5.1.6 this hit
+# Hardware::CPU.cores; in 6.x it hits the cask version check (bundle_version).
+# A bash `trap - CHLD` can't fix it (POSIX: a signal ignored on shell entry
+# stays ignored). Instead, exec brew through perl after resetting SIGCHLD to
+# its default disposition so brew can reap its own children.
 export HOMEBREW_DOWNLOAD_CONCURRENCY=4
+brew() { perl -e '$SIG{CHLD}="DEFAULT"; exec @ARGV' brew "$@"; }
 
 if ! OUTDATED="$(brew outdated 2>/dev/null)"; then
   sketchybar --set "$NAME" label=! icon.color=$RED
