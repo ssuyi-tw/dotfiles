@@ -104,6 +104,9 @@ soft link dotfiles:
 stow sheldon
 ```
 
+> **Adding a new `~/.zsh/*.zsh` fragment?** Run `sheldon lock` then `exec zsh`.
+> Sheldon caches the `*.zsh` glob in its lockfile and won't pick up new files otherwise.
+
 ### yabai
 
 install yabai
