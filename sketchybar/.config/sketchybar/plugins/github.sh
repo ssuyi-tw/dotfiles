@@ -2,12 +2,54 @@
 
 # set -x
 
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+SKETCHYBAR="${SKETCHYBAR:-$(command -v sketchybar || echo /opt/homebrew/bin/sketchybar)}"
+GH="${GH:-$(command -v gh || echo /opt/homebrew/bin/gh)}"
+
+set_unavailable() {
+  "$SKETCHYBAR" --set "$NAME" icon="$BELL" icon.color="$YELLOW" label="!" \
+                --remove '/github.notification\.*/' > /dev/null
+}
+
+gh_api_json() {
+  local response
+  response="$("$GH" api "$1" 2>/dev/null)" || return 1
+  printf '%s' "$response" | jq -e . >/dev/null 2>&1 || return 1
+  printf '%s' "$response"
+}
+
+html_url_for() {
+  # Derive the web URL from the notification's own API URL instead of an extra
+  # `gh api` round-trip per notification. With a full inbox that N+1 made the
+  # plugin take ~40s on every run (and hammered the API every 180s).
+  # https://api.github.com/repos/O/R/pulls/N -> https://github.com/O/R/pull/N
+  local api_url
+  api_url="$(printf '%s' "$1" | sed -e "s/^'//" -e "s/'$//")"
+  case "$api_url" in
+    *//api.github.com/repos/*)
+      printf '%s\n' "$api_url" \
+        | sed -e 's#//api\.github\.com/repos/#//github.com/#' \
+              -e 's#/pulls/#/pull/#' \
+              -e 's#/commits/#/commit/#'
+      ;;
+    *)
+      printf '%s\n' "https://www.github.com/notifications"
+      ;;
+  esac
+}
+
 update() {
   source "$CONFIG_DIR/colors.sh"
   source "$CONFIG_DIR/icons.sh"
 
-  NOTIFICATIONS="$(gh api notifications)"
-  COUNT="$(echo "$NOTIFICATIONS" | jq 'length')"
+  if ! NOTIFICATIONS="$(gh_api_json notifications)" \
+    || ! printf '%s' "$NOTIFICATIONS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    set_unavailable
+    return
+  fi
+
+  COUNT="$(printf '%s' "$NOTIFICATIONS" | jq 'length')"
 
   args=()
   if [ "$NOTIFICATIONS" = "[]" ]; then
@@ -16,7 +58,8 @@ update() {
     args+=(--set $NAME icon=$BELL_DOT label="$COUNT")
   fi
 
-  PREV_COUNT=$(sketchybar --query github.bell | jq -r .label.value)
+  PREV_COUNT=$("$SKETCHYBAR" --query github.bell 2>/dev/null | jq -r '.label.value // 0' 2>/dev/null)
+  [ -z "$PREV_COUNT" ] && PREV_COUNT=0
   # For sound to play around with:
   # afplay /System/Library/Sounds/Morse.aiff
 
@@ -39,13 +82,13 @@ update() {
     fi
 
     case "${type}" in
-      "'Issue'") COLOR=$GREEN; ICON=$GIT_ISSUE; URL="$(gh api "$(echo "${url}" | sed -e "s/^'//" -e "s/'$//")" | jq .html_url)"
+      "'Issue'") COLOR=$GREEN; ICON=$GIT_ISSUE; URL="$(html_url_for "$url")"
       ;;
       "'Discussion'") COLOR=$WHITE; ICON=$GIT_DISCUSSION; URL="https://www.github.com/notifications"
       ;;
-      "'PullRequest'") COLOR=$MAGENTA; ICON=$GIT_PULL_REQUEST; URL="$(gh api "$(echo "${url}" | sed -e "s/^'//" -e "s/'$//")" | jq .html_url)"
+      "'PullRequest'") COLOR=$MAGENTA; ICON=$GIT_PULL_REQUEST; URL="$(html_url_for "$url")"
       ;;
-      "'Commit'") COLOR=$WHITE; ICON=$GIT_COMMIT; URL="$(gh api "$(echo "${url}" | sed -e "s/^'//" -e "s/'$//")" | jq .html_url)"
+      "'Commit'") COLOR=$WHITE; ICON=$GIT_COMMIT; URL="$(html_url_for "$url")"
       ;;
     esac
 
@@ -64,22 +107,22 @@ update() {
       position=popup.github.bell
       icon.background.color=$COLOR
       drawing=on
-      click_script="open \"$URL\"; sketchybar --set github.bell popup.drawing=off; sleep 5; sketchybar --trigger github.update"
+      click_script="open \"$URL\"; \"$SKETCHYBAR\" --set github.bell popup.drawing=off; sleep 5; \"$SKETCHYBAR\" --trigger github.update"
     )
 
     args+=(--clone github.notification.$COUNTER github.template \
            --set github.notification.$COUNTER "${notification[@]}")
-  done <<< "$(echo "$NOTIFICATIONS" | jq -r '.[] | [.repository.name, .subject.url, .subject.type, .subject.title] | @sh')"
+  done <<< "$(printf '%s' "$NOTIFICATIONS" | jq -r '.[] | [.repository.name, .subject.url, .subject.type, .subject.title] | @sh')"
 
-  sketchybar -m "${args[@]}" > /dev/null
+  "$SKETCHYBAR" -m "${args[@]}" > /dev/null
 
   if [ $COUNT -gt $PREV_COUNT ] 2>/dev/null || [ "$SENDER" = "forced" ]; then
-    sketchybar --animate tanh 15 --set github.bell label.y_offset=5 label.y_offset=0
+    "$SKETCHYBAR" --animate tanh 15 --set github.bell label.y_offset=5 label.y_offset=0
   fi
 }
 
 popup() {
-  sketchybar --set $NAME popup.drawing=$1
+  "$SKETCHYBAR" --set $NAME popup.drawing=$1
 }
 
 case "$SENDER" in

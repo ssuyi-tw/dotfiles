@@ -113,7 +113,9 @@ update() {
 
   sketchybar --set claude.usage icon.color="$color" label="$label" label.color="$color"
 
-  render_popup "$usage" "$sess_pct" "$sess_remaining"
+  # render_popup shells out to ccusage twice (~8s of Node startup). Only pay for
+  # it when the popup is actually being opened, not on every routine label update.
+  [ "$1" = "with_popup" ] && render_popup "$usage" "$sess_pct" "$sess_remaining"
 }
 
 render_popup() {
@@ -183,7 +185,7 @@ build_popup_rows() {
 
 case "$SENDER" in
   "mouse.clicked")
-    update
+    update with_popup
     popup toggle
     ;;
   "mouse.exited.global")
