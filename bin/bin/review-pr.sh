@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# review-pr.sh — spin up a Supacode worktree + interactive Claude (automode)
-#                to review a peer PR, in the BACKGROUND (does not steal focus).
+# review-pr.sh — spin up a Herdr worktree + interactive Claude (automode)
+#                to review a peer PR in the BACKGROUND (does not steal focus).
 #
 # Usage:  review-pr.sh list [owner/repo]        # list peer PRs pending your review
 #         review-pr.sh <PR_NUMBER>             # spin up worktree + review it
@@ -14,17 +14,14 @@
 #
 # What it does:
 #   1. Resolves the PR's head + base branches and fetches them.
-#   2. Creates a managed Supacode worktree off the PR head (shows in the UI).
-#   3. Opens ONE Claude tab running `claude --permission-mode auto /review <N>`.
-#   4. Restores focus to where you were — the review runs in the background.
+#   2. Creates a managed Herdr worktree off the PR head (shows in the UI).
+#   3. Starts ONE Claude agent and submits `/review <N>`.
+#   4. Leaves focus unchanged while the review runs in the background.
 #
 # Notes:
-#   - supacode `worktree-new` and `tab new` are async/fire-and-forget; we poll
-#     the worktree list until the app registers it, then create the tab ONCE.
-#   - `supacode worktree delete` removes the folder but KEEPS the git branch, so
-#     a re-create with the same --branch collides. We drop the stale branch first.
-#   - Depends on the repo's .husky/post-checkout being guarded against the null
-#     SHA ($1 == 0000…) on new worktrees, or the app rolls the worktree back.
+#   - Herdr's worktree commands are synchronous and return workspace/tab/pane IDs.
+#   - `herdr worktree remove` keeps the git branch. A clean rebuild drops that
+#     script-owned branch before creating the replacement worktree.
 #
 set -euo pipefail
 
@@ -74,23 +71,14 @@ PR="$CMD"
 # we hit the network or create a worktree.
 [[ "$PR" =~ ^[0-9]+$ ]] || { echo "review-pr.sh: expected a PR number or 'list', got: '$PR'" >&2; exit 1; }
 [ -n "$REPO" ] || { echo "review-pr.sh: no repo detected — run inside a git repo or set REPO=owner/repo" >&2; exit 1; }
-SLUG="${REPO##*/}"
 # Local checkout to fetch into; defaults to the current repo's root.
 MAIN="${MAIN:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
 [ -n "$MAIN" ] && [ -d "$MAIN" ] || { echo "review-pr.sh: no local checkout — run inside the repo or set MAIN=/path/to/clone" >&2; exit 1; }
+command -v herdr >/dev/null || { echo "review-pr.sh: herdr is required" >&2; exit 1; }
+command -v jq >/dev/null || { echo "review-pr.sh: jq is required" >&2; exit 1; }
+[ "${HERDR_ENV:-}" = "1" ] || { echo "review-pr.sh: run this command inside Herdr" >&2; exit 1; }
 BR="pr-${PR}-review"
 NAME="pr-${PR}"
-WT_PATH="$HOME/.supacode/repos/$SLUG/${NAME}"
-# Supacode worktree id = the path with every "/" percent-encoded + trailing slash.
-WT_ID="$(printf '%s/' "$WT_PATH" | sed 's:/:%2F:g')"
-
-# Remember where we are so we can restore focus (keep the review in the background).
-ORIG_WT="${SUPACODE_WORKTREE_ID:-}"
-ORIG_TAB="${SUPACODE_TAB_ID:-}"
-
-strip() { sed 's/\x1b\[[0-9;]*m//g'; }
-# Supacode prints percent-encoded paths (…%2Fpr-352%2F), not literal slashes.
-in_supacode_list() { supacode worktree list 2>/dev/null | strip | grep -qF "%2F${NAME}%2F"; }
 
 cd "$MAIN"
 
@@ -106,45 +94,71 @@ git fetch origin "$BASE" >/dev/null 2>&1 || echo "warn: couldn't fetch $BASE; /r
 # PR head is required — the worktree is built from origin/$HEAD_REF.
 git fetch origin "$HEAD_REF" >/dev/null 2>&1 || { echo "ERROR: couldn't fetch PR head '$HEAD_REF' from origin" >&2; exit 1; }
 
-# Optional teardown for a clean rebuild.
-if [ "${RECREATE:-0}" = "1" ] && [ -d "$WT_PATH" ]; then
+# Resolve an existing checkout by the script-owned review branch. The workspace
+# ID is empty when the checkout exists on disk but is not currently open in Herdr.
+WORKTREES_JSON="$(herdr worktree list --cwd "$MAIN" --json)"
+WT_PATH="$(jq -r --arg branch "$BR" \
+  '[.result.worktrees[] | select(.branch == $branch and .is_linked_worktree)] | first | .path // empty' \
+  <<<"$WORKTREES_JSON")"
+WT_WORKSPACE_ID="$(jq -r --arg branch "$BR" \
+  '[.result.worktrees[] | select(.branch == $branch and .is_linked_worktree)] | first | .open_workspace_id // empty' \
+  <<<"$WORKTREES_JSON")"
+
+# Optional teardown for a clean rebuild. A closed checkout must be opened first
+# because Herdr removes worktrees by workspace ID.
+if [ "${RECREATE:-0}" = "1" ] && [ -n "$WT_PATH" ]; then
   echo "RECREATE=1 → removing existing worktree"
-  supacode worktree delete -w "$WT_ID" >/dev/null 2>&1 || true
-  for _ in $(seq 1 10); do [ -d "$WT_PATH" ] || break; sleep 1; done
+  if [ -z "$WT_WORKSPACE_ID" ]; then
+    OPEN_JSON="$(herdr worktree open --cwd "$MAIN" --path "$WT_PATH" --label "$NAME" --no-focus --json)"
+    WT_WORKSPACE_ID="$(jq -er '.result.workspace.workspace_id' <<<"$OPEN_JSON")"
+  fi
+  herdr worktree remove --workspace "$WT_WORKSPACE_ID" --force --json >/dev/null
   git worktree prune
+  WT_PATH=""
+  WT_WORKSPACE_ID=""
 fi
 
-if [ -d "$WT_PATH" ]; then
+# Reuse an open workspace by adding one review tab. Opening a closed worktree or
+# creating a new one already provides an empty root pane for the review.
+if [ -n "$WT_PATH" ] && [ -n "$WT_WORKSPACE_ID" ]; then
   echo "worktree already exists — reusing it (RECREATE=1 to rebuild)"
+  TAB_JSON="$(herdr tab create --workspace "$WT_WORKSPACE_ID" --cwd "$WT_PATH" --label "review #$PR" --no-focus)"
+  PANE_ID="$(jq -er '.result.root_pane.pane_id' <<<"$TAB_JSON")"
+elif [ -n "$WT_PATH" ]; then
+  echo "worktree already exists — opening it (RECREATE=1 to rebuild)"
+  OPEN_JSON="$(herdr worktree open --cwd "$MAIN" --path "$WT_PATH" --label "$NAME" --no-focus --json)"
+  WT_WORKSPACE_ID="$(jq -er '.result.workspace.workspace_id' <<<"$OPEN_JSON")"
+  PANE_ID="$(jq -er '.result.root_pane.pane_id' <<<"$OPEN_JSON")"
 else
-  # Conflict-proof: drop a stale review branch left behind by a prior delete.
+  # Drop a stale script-owned branch left behind by a prior worktree removal.
   git branch -D "$BR" >/dev/null 2>&1 && echo "dropped stale branch $BR" || true
 
-  supacode repo worktree-new --branch "$BR" --base "origin/$HEAD_REF" --name "$NAME"
-
-  echo -n "waiting for Supacode to register the worktree"
-  for _ in $(seq 1 25); do
-    in_supacode_list && { echo " ✓"; break; }
-    echo -n "."; sleep 1
-  done
-  in_supacode_list || { echo; echo "ERROR: worktree never registered (husky hook? branch conflict?)" >&2; exit 1; }
+  CREATE_JSON="$(herdr worktree create --cwd "$MAIN" --branch "$BR" --base "origin/$HEAD_REF" --label "$NAME" --no-focus --json)"
+  WT_PATH="$(jq -er '.result.worktree.path' <<<"$CREATE_JSON")"
+  WT_WORKSPACE_ID="$(jq -er '.result.workspace.workspace_id' <<<"$CREATE_JSON")"
+  PANE_ID="$(jq -er '.result.root_pane.pane_id' <<<"$CREATE_JSON")"
 fi
 
-# Launch exactly ONE Claude review tab in automode. Two quirks, both handled:
-#   - The terminal surface only instantiates reliably when the worktree is
-#     focused, so we focus it first (brief flicker), then restore below.
-#   - `supacode tab new -i` ALWAYS times out at the CLI yet still creates the tab
-#     and runs the command async — so we tolerate the non-zero exit and do NOT
-#     capture the UUID (it would be the error string). No retry loop = no forks.
-supacode worktree focus -w "$WT_ID" >/dev/null 2>&1 || true
-supacode tab new -w "$WT_ID" -i "claude --permission-mode auto '/review $PR'" >/dev/null 2>&1 || true
-echo "launched Claude review (automode) in worktree '$NAME'"
+# Start Claude in the returned background pane, then submit the review prompt.
+# The per-process name stays unique when the same PR is reviewed more than once.
+AGENT_NAME="review-pr-${PR}-$$"
+for attempt in {1..30}; do
+  if START_OUTPUT="$(herdr agent start "$AGENT_NAME" --kind claude --pane "$PANE_ID" -- --permission-mode auto 2>&1)"; then
+    break
+  fi
 
-# Let the async tab settle, then restore focus so the review runs in the background.
-sleep 3
-if [ -n "$ORIG_WT" ]; then
-  supacode worktree focus -w "$ORIG_WT" >/dev/null 2>&1 || true
-  [ -n "$ORIG_TAB" ] && supacode tab focus -w "$ORIG_WT" -t "$ORIG_TAB" >/dev/null 2>&1 || true
-fi
+  ERROR_CODE="$(jq -r '.error.code // empty' <<<"$START_OUTPUT" 2>/dev/null || true)"
+  if [ "$ERROR_CODE" != "agent_pane_busy" ]; then
+    printf '%s\n' "$START_OUTPUT" >&2
+    exit 1
+  fi
+  if [ "$attempt" -eq 30 ]; then
+    echo "review-pr.sh: Herdr pane $PANE_ID was still busy after 15 seconds" >&2
+    printf '%s\n' "$START_OUTPUT" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+herdr agent prompt "$AGENT_NAME" "/review $PR" >/dev/null
 
-echo "done — reviewing #$PR in the background. Switch to worktree '$NAME' to watch."
+echo "done — reviewing #$PR in the background at $WT_PATH (workspace $WT_WORKSPACE_ID)."
