@@ -98,7 +98,7 @@
     },
     "git.autofetch": true,
     "githubPullRequests.pullBranch": "never",
-    "update.releaseTrack": "prerelease",
+    "update.releaseTrack": "stable",
     "editor.rulers": [
       80,
       120
@@ -134,5 +134,19 @@
         "titleBar.inactiveBackground": "#1c1c1c"
 
       }
-    }
+    },
+    "[vue]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "claudeCode.preferredLocation": "panel",
+    "jest.runMode": null,
+    "[jsonc]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "cSpell.userWords": [
+      "Agentic",
+      "NITRA"
+    ],
+    "window.autoDetectColorScheme": false,
+    "jest.enable": false
 }
