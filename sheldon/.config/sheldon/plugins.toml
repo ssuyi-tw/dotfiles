@@ -32,14 +32,17 @@ github = "zimfw/utility"
 inline = 'export ZSH_CACHE_DIR="$HOME/.cache/zsh"; export FPATH="$ZSH_CACHE_DIR/completions:$FPATH"'
 
 # For docker aliases/completions
+# Opt-in: export SHELDON_PROFILE=docker before `sheldon source` (see .zshrc)
 [plugins.ohmyzsh_docker]
 github = "ohmyzsh/ohmyzsh"
 dir = "plugins/docker"
+profiles = ["docker"]
 
 # For docker compose aliases
 [plugins.ohmyzsh_docker-compose]
 github = "ohmyzsh/ohmyzsh"
 dir = "plugins/docker-compose"
+profiles = ["docker"]
 
 # must after OMZ docker
 [plugins.zimfw_completion]
