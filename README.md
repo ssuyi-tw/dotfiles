@@ -197,6 +197,17 @@ stow vim
 
 Run `:PlugInstall` in vim
 
+### herdr
+
+install config
+
+```sh
+stow herdr
+```
+
+> Only `config.toml` is tracked. `herdr-*.log`, `*.sock`, `session.json`, and `.plugins.lock` are
+> runtime state left in `~/.config/herdr` untouched by stow.
+
 ### executables
 
 to `~/.bin`
