@@ -74,9 +74,8 @@ dir = "plugins/kubectl"
 github = "joke/zim-starship"
 
 # jump around
-[plugins.z]
-# github = "rupa/z"
-github = "agkozak/zsh-z"
+[plugins.zoxide]
+inline = 'eval "$(zoxide init zsh)"'
 
 # Fish-like syntax highlighting for Zsh.
 [plugins.syntax]
