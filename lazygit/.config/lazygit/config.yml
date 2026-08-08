@@ -1,0 +1,45 @@
+gui:
+  mouseEvents: false
+  skipAmendWarning: false
+  skipDiscardChangeWarning: false
+  skipStashWarning: false
+  skipNoStagedFilesWarning: false
+  skipRewordInEditorWarning: false
+  skipSwitchWorktreeOnCheckoutWarning: false
+  mainPanelSplitMode: flexible
+  timeFormat: "2006-01-02"
+  shortTimeFormat: "15:04"
+  showFileTree: true
+  showRootItemInFileTree: true
+  showRandomTip: true
+  showCommandLog: true
+  nerdFontsVersion: "3"
+  showFileIcons: true
+  showDivergenceFromBaseBranch: arrowAndNumber
+  splitDiff: auto
+  #screenMode: full
+  border: single
+  filterMode: fuzzy
+
+git:
+  commit:
+    autoWrapCommitMessage: true
+    autoWrapWidth: 80
+  autoFetch: false
+  ignoreWhitespaceInDiffView: false
+  diffContextSize: 5
+  disableForcePushing: false
+  log:
+    showGraph: always
+  localBranchSortOrder: recency
+
+update:
+  method: prompt
+  days: 14
+
+confirmOnQuit: false
+
+os:
+  editPreset: nvim
+
+disableStartupPopups: false
